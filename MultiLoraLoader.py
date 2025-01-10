@@ -5,6 +5,9 @@ import comfy.utils
 import comfy.sd
 import os
 import re
+import torch
+
+from typing import Dict
 
 class MultiLoraLoader:
     def __init__(self):
@@ -88,35 +91,56 @@ class LoraItemsParser:
         self.comment_trim_re = re.compile("\s*#.*\Z")
     
     def execute(self):
-        return [LoraItem(elements[0], elements[1], elements[2])
-            for line in self.lora_text.splitlines()
-            for elements in [self.parse_lora_description(self.description_from_line(line))] if elements[0] is not None]
+
+        out_loras = []
+
+        for line in self.lora_text.splitlines():
+            description = self.description_from_line(line)
+            name, model_weight, clip_weight, block_type = self.parse_lora_description(description)
+            if name is not None:
+                out_loras.append(LoraItem(name, model_weight, clip_weight, block_type))
+                    
+        return out_loras
     
     def parse_lora_description(self, description):
         if description is None:
-            return (None,)
+            return (None, None, None, None)
         
         lora_name = None
         strength_model = self.default_weight
         strength_clip = None
+        block_type = "blocks_all"
         
-        remaining, sep, strength = description.rpartition(self.weight_separator)
-        if sep == self.weight_separator:
-            lora_name = remaining
-            strength_model = float(strength)
-            
-            remaining, sep, strength = remaining.rpartition(self.weight_separator)
-            if sep == self.weight_separator:
-                strength_clip = strength_model
-                strength_model = float(strength)
-                lora_name = remaining
-        else:
-            lora_name = description
+        parts = description.split(self.weight_separator)
+    
+        try:
+            if len(parts) == 1:  # Only lora name
+                lora_name = parts[0]
+            elif len(parts) == 2:  # lora name and model weight
+                lora_name, last_param = parts
+                if last_param.startswith("blocks_"):
+                    block_type = last_param
+                else:
+                    strength_model = float(last_param)
+            elif len(parts) == 3:  # lora name, model weight, and either clip weight or block type
+                lora_name, strength_model, last_param = parts
+                strength_model = float(strength_model)
+                if last_param.startswith("blocks_"):
+                    block_type = last_param
+                else:
+                    strength_clip = float(last_param)
+            elif len(parts) == 4:  # lora name, model weight, clip weight, and block type
+                lora_name, strength_model, strength_clip, block_type = parts
+                strength_model = float(strength_model)
+                strength_clip = float(strength_clip)
+        except ValueError as e:
+            raise ValueError(f"Invalid description format: {description}") from e
         
         if strength_clip is None:
             strength_clip = strength_model
-        
-        return (self.loras_by_short_names.get(lora_name, lora_name), strength_model, strength_clip)
+
+        return (self.loras_by_short_names.get(lora_name, lora_name), strength_model, strength_clip, block_type)
+
 
     def description_from_line(self, line):
         result = self.comment_trim_re.sub("", line.strip())
@@ -125,14 +149,15 @@ class LoraItemsParser:
         
 
 class LoraItem:
-    def __init__(self, lora_name, strength_model, strength_clip):
+    def __init__(self, lora_name, strength_model, strength_clip, blocks_type):
         self.lora_name = lora_name
         self.strength_model = strength_model
         self.strength_clip = strength_clip
+        self.blocks_type = blocks_type
         self._loaded_lora = None
     
     def __eq__(self, other):
-        return self.lora_name == other.lora_name and self.strength_model == other.strength_model and self.strength_clip == other.strength_clip
+        return self.lora_name == other.lora_name and self.strength_model == other.strength_model and self.strength_clip == other.strength_clip and self.blocks_type == other.blocks_type
     
     def get_lora_path(self):
         return folder_paths.get_full_path("loras", self.lora_name)
@@ -146,9 +171,35 @@ class LoraItem:
     def apply_lora(self, model, clip):
         if self.is_noop:
             return (model, clip)
+
+        filtered_lora = self.filter_lora_keys(self.lora_object, self.blocks_type)
         
-        model_lora, clip_lora = comfy.sd.load_lora_for_models(model, clip, self.lora_object, self.strength_model, self.strength_clip)
+        model_lora, clip_lora = comfy.sd.load_lora_for_models(model, clip, filtered_lora, self.strength_model, self.strength_clip)
         return (model_lora, clip_lora)
+
+    def convert_key_format(self, key: str) -> str:
+        prefixes = ["diffusion_model.", "transformer."]
+        for prefix in prefixes:
+            if key.startswith(prefix):
+                key = key[len(prefix):]
+                break
+                
+        return key
+    
+    def filter_lora_keys(self, lora: Dict[str, torch.Tensor], blocks_type: str) -> Dict[str, torch.Tensor]:
+        if blocks_type == "blocks_all":
+            return lora
+            
+        filtered_lora = {}
+        for key, value in lora.items():
+            base_key = self.convert_key_format(key)
+            
+            if blocks_type == "blocks_single" and "single_blocks" in base_key:
+                filtered_lora[key] = value
+            elif blocks_type == "blocks_double" and "double_blocks" in base_key:
+                filtered_lora[key] = value
+                
+        return filtered_lora
 
     @property
     def lora_object(self):
