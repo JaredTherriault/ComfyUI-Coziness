@@ -5,9 +5,6 @@ import comfy.utils
 import comfy.sd
 import os
 import re
-import torch
-
-from typing import Dict
 
 class MultiLoraLoader:
     def __init__(self):
@@ -172,12 +169,12 @@ class LoraItem:
         if self.is_noop:
             return (model, clip)
 
-        filtered_lora = self.filter_lora_keys(self.lora_object, self.blocks_type)
+        filtered_lora = self.get_filtered_lora()
         
         model_lora, clip_lora = comfy.sd.load_lora_for_models(model, clip, filtered_lora, self.strength_model, self.strength_clip)
         return (model_lora, clip_lora)
 
-    def convert_key_format(self, key: str) -> str:
+    def make_base_lora_key(self, key: str) -> str:
         prefixes = ["diffusion_model.", "transformer."]
         for prefix in prefixes:
             if key.startswith(prefix):
@@ -186,17 +183,17 @@ class LoraItem:
                 
         return key
     
-    def filter_lora_keys(self, lora: Dict[str, torch.Tensor], blocks_type: str) -> Dict[str, torch.Tensor]:
-        if blocks_type == "blocks_all":
-            return lora
+    def get_filtered_lora(self):
+        if "blocks_all" in self.blocks_type:
+            return self.lora_object
             
         filtered_lora = {}
-        for key, value in lora.items():
-            base_key = self.convert_key_format(key)
+        for key, value in self.lora_object.items():
+            base_key = self.make_base_lora_key(key)
             
-            if blocks_type == "blocks_single" and "single_blocks" in base_key:
+            if "blocks_single" in self.blocks_type and "single_blocks" in base_key:
                 filtered_lora[key] = value
-            elif blocks_type == "blocks_double" and "double_blocks" in base_key:
+            elif "blocks_double" in self.blocks_type and "double_blocks" in base_key:
                 filtered_lora[key] = value
                 
         return filtered_lora
