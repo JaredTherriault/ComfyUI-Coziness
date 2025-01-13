@@ -6,6 +6,10 @@ import comfy.sd
 import os
 import re
 
+KEY_BLOCKS_ALL = "all_blocks"
+KEY_BLOCKS_SINGLE = "single_blocks"
+KEY_BLOCKS_DOUBLE = "double_blocks"
+
 class MultiLoraLoader:
     def __init__(self):
         self.selected_loras = SelectedLoras()
@@ -106,37 +110,89 @@ class LoraItemsParser:
         lora_name = None
         strength_model = self.default_weight
         strength_clip = None
-        block_type = "blocks_all"
+        blocks = []
         
         parts = description.split(self.weight_separator)
     
         try:
             if len(parts) == 1:  # Only lora name
                 lora_name = parts[0]
-            elif len(parts) == 2:  # lora name and model weight
+            elif len(parts) == 2:  # lora name and model weight or blocks
                 lora_name, last_param = parts
-                if last_param.startswith("blocks_"):
-                    block_type = last_param
+                if "blocks" in last_param:
+                    blocks = [last_param]
                 else:
                     strength_model = float(last_param)
-            elif len(parts) == 3:  # lora name, model weight, and either clip weight or block type
+            elif len(parts) == 3:  # lora name, model weight, and either clip weight or blocks
                 lora_name, strength_model, last_param = parts
                 strength_model = float(strength_model)
-                if last_param.startswith("blocks_"):
-                    block_type = last_param
+                if "blocks" in last_param:
+                    blocks = [last_param]
                 else:
                     strength_clip = float(last_param)
-            elif len(parts) == 4:  # lora name, model weight, clip weight, and block type
-                lora_name, strength_model, strength_clip, block_type = parts
+            elif len(parts) == 4:  # name, model weight, clip weight, blocks (single or double) OR name, model weight, blocks (single and double)
+                lora_name, strength_model, second_to_last_param, last_param = parts
+                strength_model = float(strength_model)
+                if "blocks" in second_to_last_param:
+                    blocks = [second_to_last_param]
+                else:
+                    strength_clip = float(second_to_last_param)
+                blocks.append(last_param)
+            elif len(parts) == 5:  # lora name, model weight, clip weight, single blocks, double blocks (block position is interchangeable)
+                lora_name, strength_model, strength_clip, blocksA, blocksB = parts
                 strength_model = float(strength_model)
                 strength_clip = float(strength_clip)
+                blocks = [blocksA, blocksB]
         except ValueError as e:
             raise ValueError(f"Invalid description format: {description}") from e
         
         if strength_clip is None:
             strength_clip = strength_model
 
-        return (self.loras_by_short_names.get(lora_name, lora_name), strength_model, strength_clip, block_type)
+        def parse_ranges(input_str, max_range=100):
+            result = set()
+            for part in input_str.split(','):
+                part = part.strip()  # Remove extra spaces
+                if '-' in part:
+                    try:
+                        start, end = map(int, part.split('-'))
+                        # Add range as strings
+                        result.update(map(str, range(min(start, end), max(start, end) + 1)))
+                    except ValueError as e:
+                        raise ValueError(f"Invalid numeric range: {e}")
+                elif "even" in part:
+                    # Add even numbers as strings
+                    result.update(map(str, range(0, max_range + 1, 2)))
+                elif "odd" in part:
+                    # Add odd numbers as strings
+                    result.update(map(str, range(1, max_range + 1, 2)))
+                elif part.isdigit():  # Single numeric value
+                    result.add(part)
+                elif part:  # Handle non-numeric strings
+                    result.add(part)
+            return result
+
+        valid_blocks = [KEY_BLOCKS_SINGLE, KEY_BLOCKS_DOUBLE]
+        if not blocks:
+            blocks = {KEY_BLOCKS_ALL: []}
+        else:
+            # Split compound block strings like `double_blocks[1-10]`
+            normalized_blocks = {}
+            for block in blocks:
+                block = block.strip()
+                if "[" in block and "]" in block:
+                    block_type, indices = block.split("[", 1)
+                    block_type = block_type.strip()
+                    indices = indices.rstrip("]").strip()
+                    if block_type in valid_blocks:
+                        normalized_blocks[block_type] = parse_ranges(indices)
+                elif block in valid_blocks:
+                    normalized_blocks[block] = []
+                else:
+                    raise ValueError(f"Invalid block type or format: {block}")
+            blocks = normalized_blocks
+
+        return (self.loras_by_short_names.get(lora_name, lora_name), strength_model, strength_clip, blocks)
 
 
     def description_from_line(self, line):
@@ -150,11 +206,11 @@ class LoraItem:
         self.lora_name = lora_name
         self.strength_model = strength_model
         self.strength_clip = strength_clip
-        self.blocks_type = blocks_type
+        self.blocks = blocks_type
         self._loaded_lora = None
     
     def __eq__(self, other):
-        return self.lora_name == other.lora_name and self.strength_model == other.strength_model and self.strength_clip == other.strength_clip and self.blocks_type == other.blocks_type
+        return self.lora_name == other.lora_name and self.strength_model == other.strength_model and self.strength_clip == other.strength_clip and self.blocks == other.blocks
     
     def get_lora_path(self):
         return folder_paths.get_full_path("loras", self.lora_name)
@@ -173,29 +229,46 @@ class LoraItem:
         
         model_lora, clip_lora = comfy.sd.load_lora_for_models(model, clip, filtered_lora, self.strength_model, self.strength_clip)
         return (model_lora, clip_lora)
-
-    def make_base_lora_key(self, key: str) -> str:
-        prefixes = ["diffusion_model.", "transformer."]
-        for prefix in prefixes:
-            if key.startswith(prefix):
-                key = key[len(prefix):]
-                break
-                
-        return key
     
     def get_filtered_lora(self):
-        if "blocks_all" in self.blocks_type:
+        # Early return if all blocks are present
+        if KEY_BLOCKS_ALL in self.blocks:
             return self.lora_object
-            
+
+        # Check if single and double blocks are in the 'self.blocks'
+        use_single_blocks = KEY_BLOCKS_SINGLE in self.blocks
+        use_single_block_indices = use_single_blocks and len(self.blocks[KEY_BLOCKS_SINGLE]) > 0
+        use_double_blocks = KEY_BLOCKS_DOUBLE in self.blocks
+        use_double_block_indices = use_double_blocks and len(self.blocks[KEY_BLOCKS_DOUBLE]) > 0
+
+        # Initialize a dictionary to store the filtered Lora values
         filtered_lora = {}
+
+        # Helper function to check for valid indices
+        def has_matching_index(layer, index):
+            if use_single_block_indices and layer == KEY_BLOCKS_SINGLE:
+                return index in self.blocks[KEY_BLOCKS_SINGLE]
+            if use_double_block_indices and layer == KEY_BLOCKS_DOUBLE:
+                return index in self.blocks[KEY_BLOCKS_DOUBLE]
+            return True  # If there are no indices, all are considered matching
+
+        # Iterate through the items in the Lora object
         for key, value in self.lora_object.items():
-            base_key = self.make_base_lora_key(key)
+            components = key.split(".")
             
-            if "blocks_single" in self.blocks_type and "single_blocks" in base_key:
-                filtered_lora[key] = value
-            elif "blocks_double" in self.blocks_type and "double_blocks" in base_key:
-                filtered_lora[key] = value
-                
+            # Strip and lowercase the layer for easier matching
+            layer = components[1].strip().lower()
+            index = components[2].strip()
+
+            # Check if layer matches and if index is valid
+            if use_single_blocks and layer == KEY_BLOCKS_SINGLE:
+                if has_matching_index(layer, index):
+                    filtered_lora[key] = value
+
+            if use_double_blocks and layer == KEY_BLOCKS_DOUBLE:
+                if has_matching_index(layer, index):
+                    filtered_lora[key] = value
+
         return filtered_lora
 
     @property
