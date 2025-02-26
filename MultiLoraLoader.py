@@ -8,7 +8,9 @@ import re
 
 KEY_BLOCKS_ALL = "all_blocks"
 KEY_BLOCKS_SINGLE = "single_blocks"
+KEY_BLOCKS_SINGLE_ABBR = "msb"
 KEY_BLOCKS_DOUBLE = "double_blocks"
+KEY_BLOCKS_DOUBLE_ABBR = "mdb"
 
 class MultiLoraLoader:
     def __init__(self):
@@ -113,6 +115,9 @@ class LoraItemsParser:
         blocks = []
         
         parts = description.split(self.weight_separator)
+
+        def is_block_param(param):
+            return param.split("[")[0] in [KEY_BLOCKS_SINGLE, KEY_BLOCKS_SINGLE_ABBR, KEY_BLOCKS_DOUBLE, KEY_BLOCKS_DOUBLE_ABBR]
     
         try:
             if len(parts) == 1:  # Only lora name
@@ -126,14 +131,14 @@ class LoraItemsParser:
             elif len(parts) == 3:  # lora name, model weight, and either clip weight or blocks
                 lora_name, strength_model, last_param = parts
                 strength_model = float(strength_model)
-                if "blocks" in last_param:
+                if is_block_param(last_param):
                     blocks = [last_param]
                 else:
                     strength_clip = float(last_param)
             elif len(parts) == 4:  # name, model weight, clip weight, blocks (single or double) OR name, model weight, blocks (single and double)
                 lora_name, strength_model, second_to_last_param, last_param = parts
                 strength_model = float(strength_model)
-                if "blocks" in second_to_last_param:
+                if is_block_param(second_to_last_param):
                     blocks = [second_to_last_param]
                 else:
                     strength_clip = float(second_to_last_param)
@@ -172,14 +177,15 @@ class LoraItemsParser:
                     result.add(part)
             return result
 
-        valid_blocks = [KEY_BLOCKS_SINGLE, KEY_BLOCKS_DOUBLE]
+        valid_blocks = [KEY_BLOCKS_SINGLE, KEY_BLOCKS_SINGLE_ABBR, KEY_BLOCKS_DOUBLE, KEY_BLOCKS_DOUBLE_ABBR]
         if not blocks:
             blocks = {KEY_BLOCKS_ALL: []}
         else:
             # Split compound block strings like `double_blocks[1-10]`
             normalized_blocks = {}
             for block in blocks:
-                block = block.strip()
+                # Remove whitespace and expand abbreviations
+                block = block.strip().replace(KEY_BLOCKS_SINGLE_ABBR, KEY_BLOCKS_SINGLE).replace(KEY_BLOCKS_DOUBLE_ABBR, KEY_BLOCKS_DOUBLE)
                 if "[" in block and "]" in block:
                     block_type, indices = block.split("[", 1)
                     block_type = block_type.strip()
@@ -187,7 +193,7 @@ class LoraItemsParser:
                     if block_type in valid_blocks:
                         normalized_blocks[block_type] = parse_ranges(indices)
                 elif block in valid_blocks:
-                    normalized_blocks[block] = []
+                    normalized_blocks[block] = set()
                 else:
                     raise ValueError(f"Invalid block type or format: {block}")
             blocks = normalized_blocks
@@ -256,18 +262,21 @@ class LoraItem:
         for key, value in self.lora_object.items():
             components = key.split(".")
             
-            # Strip and lowercase the layer for easier matching
-            layer = components[1].strip().lower()
-            index = components[2].strip()
+            try:
+                # Strip and lowercase the layer for easier matching
+                layer = components[1].strip().lower()
+                index = components[2].strip()
 
-            # Check if layer matches and if index is valid
-            if use_single_blocks and layer == KEY_BLOCKS_SINGLE:
-                if has_matching_index(layer, index):
-                    filtered_lora[key] = value
+                # Check if layer matches and if index is valid
+                if use_single_blocks and layer == KEY_BLOCKS_SINGLE:
+                    if has_matching_index(layer, index):
+                        filtered_lora[key] = value
 
-            if use_double_blocks and layer == KEY_BLOCKS_DOUBLE:
-                if has_matching_index(layer, index):
-                    filtered_lora[key] = value
+                if use_double_blocks and layer == KEY_BLOCKS_DOUBLE:
+                    if has_matching_index(layer, index):
+                        filtered_lora[key] = value
+            except:
+                pass
 
         return filtered_lora
 
