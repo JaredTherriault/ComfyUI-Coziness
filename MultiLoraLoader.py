@@ -19,17 +19,17 @@ class MultiLoraLoader:
     @classmethod
     def INPUT_TYPES(s):
         return {"required": { "model": ("MODEL",),
-                              "clip": ("CLIP", ),
                               "text": ("STRING", {
                                 "multiline": True,
                                 "default": ""}),
-                            }}
+                            },
+                "optional": {"clip": ("CLIP", ),}}
 
     RETURN_TYPES = ("MODEL", "CLIP")
     FUNCTION = "load_loras"
     CATEGORY = "loaders"
 
-    def load_loras(self, model, clip, text):
+    def load_loras(self, model, text, clip = None):
         result = (model, clip)
         
         lora_items = self.selected_loras.updated_lora_items_with_text(text)
