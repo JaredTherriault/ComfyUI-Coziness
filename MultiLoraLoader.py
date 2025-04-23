@@ -7,6 +7,7 @@ import os
 import re
 
 KEY_BLOCKS_ALL = "all_blocks"
+KEY_BLOCKS_ALL_ABBR = "allb"
 KEY_BLOCKS_SINGLE = "single_blocks"
 KEY_BLOCKS_SINGLE_ABBR = "msb"
 KEY_BLOCKS_DOUBLE = "double_blocks"
@@ -39,6 +40,78 @@ class MultiLoraLoader:
                 result = item.apply_lora(result[0], result[1])
             
         return result
+
+class MultiLoraParser:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "text": ("STRING", {
+                    "multiline": True,
+                    "default": ""
+                }),
+            }
+        }
+
+    RETURN_TYPES = ("LORA_INFO",)
+    RETURN_NAMES = ("Lora Info List",)
+    FUNCTION = "parse_loras"
+    CATEGORY = "utils"
+
+    def __init__(self):
+        self.selected_loras = SelectedLoras()
+
+    @staticmethod
+    def get_block_list(blocks):
+        return list()
+
+    def parse_loras(self, text):
+        lora_items = self.selected_loras.updated_lora_items_with_text(text)
+
+        parsed_info = []
+        for item in lora_items:
+            lora_path = item.get_lora_path()
+            parsed_info.append({
+                "path": lora_path,
+                "strength": item.strength_model,
+                "name": item.lora_name,
+                "blocks": list() if KEY_BLOCKS_ALL in item.blocks else MultiLoraParser.get_block_list(item.blocks),
+                "low_mem_load": False  # Can be expanded later if needed
+            })
+
+        return (parsed_info,)
+
+class LoraInfoToHunyuanVidLora:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "lora_info": ("LORA_INFO",),
+            }
+        }
+
+    RETURN_TYPES = ("HYVIDLORA",)
+    FUNCTION = "passthrough"
+    CATEGORY = "utils"
+
+    def passthrough(self, lora_info):
+        return (lora_info,)
+
+class LoraInfoToWanVidLora:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "lora_info": ("LORA_INFO",),
+            }
+        }
+
+    RETURN_TYPES = ("WANVIDLORA",)
+    FUNCTION = "passthrough"
+    CATEGORY = "utils"
+
+    def passthrough(self, lora_info):
+        return (lora_info,)
  
 # maintains a list of lora objects made from a prompt, preserving loaded loras across changes
 class SelectedLoras:
@@ -117,7 +190,7 @@ class LoraItemsParser:
         parts = description.split(self.weight_separator)
 
         def is_block_param(param):
-            return param.split("[")[0] in [KEY_BLOCKS_SINGLE, KEY_BLOCKS_SINGLE_ABBR, KEY_BLOCKS_DOUBLE, KEY_BLOCKS_DOUBLE_ABBR]
+            return param.split("[")[0] in [KEY_BLOCKS_ALL, KEY_BLOCKS_ALL_ABBR, KEY_BLOCKS_SINGLE, KEY_BLOCKS_SINGLE_ABBR, KEY_BLOCKS_DOUBLE, KEY_BLOCKS_DOUBLE_ABBR]
     
         try:
             if len(parts) == 1:  # Only lora name
@@ -324,9 +397,15 @@ class LoraTextExtractor:
 NODE_CLASS_MAPPINGS = {
     "MultiLoraLoader-70bf3d77": MultiLoraLoader,
     "LoraTextExtractor-b1f83aa2": LoraTextExtractor,
+    "MultiLoraParser-8c12fa4b": MultiLoraParser,
+    "LoraInfoToHunyuanVidLora-bb8cfde0": LoraInfoToHunyuanVidLora,
+    "LoraInfoToWanVidLora-bd47e92c": LoraInfoToWanVidLora,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "MultiLoraLoader-70bf3d77": "MultiLora Loader",
     "LoraTextExtractor-b1f83aa2": "Lora Text Extractor",
+    "MultiLoraParser-8c12fa4b": "Multi Lora Parser",
+    "LoraInfoToHunyuanVidLora-bb8cfde0": "Lora Info To HunyuanVid Lora",
+    "LoraInfoToWanVidLora-bd47e92c": "Lora Info To WanVid Lora",
 }
